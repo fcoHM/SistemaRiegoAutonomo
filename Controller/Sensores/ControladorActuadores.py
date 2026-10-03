@@ -33,14 +33,14 @@ class _ActuadorGPIO:
 
 
 class BombaAgua(_ActuadorGPIO):
-    """Controla la bomba conectada al GPIO BCM 13."""
-
-    def __init__(self, activo_bajo=False):
-        super().__init__(board.D13, activo_bajo)
-
-
-class Electrovalvula(_ActuadorGPIO):
-    """Controla la electroválvula conectada al GPIO BCM 15."""
+    """Controla la bomba conectada al GPIO BCM 15."""
 
     def __init__(self, activo_bajo=False):
         super().__init__(board.D15, activo_bajo)
+
+
+class Electrovalvula(_ActuadorGPIO):
+    """Controla la electroválvula conectada al GPIO BCM 13."""
+
+    def __init__(self, activo_bajo=False):
+        super().__init__(board.D13, activo_bajo)
