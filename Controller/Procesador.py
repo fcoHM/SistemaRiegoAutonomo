@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from math import isfinite
 from numbers import Real
-from threading import Event, Lock
+from threading import Condition, Event, Lock
 from time import monotonic, sleep, time_ns
 
 from Model.Models.LecturaSensor import LecturaSensor
@@ -30,7 +30,10 @@ class Procesador:
 		self._reloj = reloj or monotonic
 		self._detener = Event()
 		self._lock_sensores = Lock()
+		self._condicion_cambios = Condition()
+		self._version_cambios = 0
 		self._sensores = {}
+		self._ultimas_lecturas = {}
 		self.nombre_nodo = None
 		self.configuracion_actual = None
 		self._siguiente_actualizacion = None
@@ -53,6 +56,30 @@ class Procesador:
 			if len(self._sensores) >= self.MAX_SENSORES:
 				raise ValueError("No se pueden registrar más de 4 sensores.")
 			self._sensores[nombre] = sensor
+			self._ultimas_lecturas[nombre] = None
+		self._notificar_cambio()
+
+	def obtener_ultimas_lecturas(self):
+		with self._lock_sensores:
+			return self._ultimas_lecturas.copy()
+
+	@property
+	def version_cambios(self):
+		with self._condicion_cambios:
+			return self._version_cambios
+
+	def esperar_cambio(self, version, timeout=None):
+		with self._condicion_cambios:
+			self._condicion_cambios.wait_for(
+				lambda: self._version_cambios != version,
+				timeout=timeout,
+			)
+			return self._version_cambios
+
+	def _notificar_cambio(self):
+		with self._condicion_cambios:
+			self._version_cambios += 1
+			self._condicion_cambios.notify_all()
 
 	def detener(self):
 		self._detener.set()
@@ -106,9 +133,7 @@ class Procesador:
 			self._siguiente_monitoreo = ahora + self._intervalo_a_segundos(
 				self.configuracion_actual["intervalo_monitoreo"]
 			)
-			# Notificar a observadores (ej. ConsolaView) que hay nuevas lecturas
 			self.evento_lectura.set()
-			self.evento_lectura.clear()
 
 		return max(
 			0.0,
@@ -184,6 +209,9 @@ class Procesador:
 				valor=float(valor),
 			)
 			self.medicion_repository.create(lectura)
+			with self._lock_sensores:
+				self._ultimas_lecturas[nombre] = float(valor)
+			self._notificar_cambio()
 			if valor < humedad_seca:
 				necesita_riego = True
 
