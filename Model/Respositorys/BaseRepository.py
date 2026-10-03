@@ -33,4 +33,7 @@ class BaseRepository(ABC):
     @abstractmethod
     def delete(self, identifier):
         pass
+
+    def close(self):
+        self.db_client.close()
     

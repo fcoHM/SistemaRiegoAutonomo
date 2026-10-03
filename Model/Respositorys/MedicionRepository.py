@@ -1,4 +1,5 @@
 from .BaseRepository import BaseRepository
+from ..Models.LecturaSensor import LecturaSensor
 from ..Models.Medicion import Medicion
 
 class MedicionRepository(BaseRepository):
@@ -15,6 +16,14 @@ class MedicionRepository(BaseRepository):
     def _to_model(document):
         if document is None:
             return None
+        if "sensor" in document:
+            return LecturaSensor(
+                timestamp=document["timestamp"],
+                fecha_hora=document["fecha_hora"],
+                nodo=document["nodo"],
+                sensor=document["sensor"],
+                valor=document["valor"],
+            )
         return Medicion(
             timestamp=document["timestamp"],
             fecha_iso=document["fecha_iso"],
