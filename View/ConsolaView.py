@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Dict, Optional, Tuple
+import time
+from typing import Dict, List, Optional, Tuple
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Constantes de estado
@@ -63,9 +64,11 @@ def _encabezado() -> None:
 def _imprimir_sensores(
     sensores_registrados: Dict[str, object],
     ultimas_lecturas: Dict[str, Optional[float]],
+    estado_bomba: bool = False,
 ) -> None:
     """Muestra la tabla de sensores con su ultima lectura y estado."""
-    print(f"\n{'SENSOR':<26} {'LECTURA':>10}  ESTADO")
+    bomba_str = " BOMBA: [ACTIVA] " if estado_bomba else " BOMBA: [inactiva]"
+    print(f"\n{'SENSOR':<26} {'LECTURA':>10}  ESTADO            {bomba_str}")
     print(_SEP)
     if not sensores_registrados:
         print("  (sin sensores registrados)")
@@ -111,6 +114,7 @@ class ConsolaView:
         self._ultimas_lecturas: Dict[str, Optional[float]] = {}
         self._lock_lecturas = threading.Lock()
         self._hilo_monitoreo: Optional[threading.Thread] = None
+        self._estado_bomba: bool = False  # True = bomba activa
 
     # ── Interfaz pública ──────────────────────────────────────────────────────
 
@@ -144,7 +148,14 @@ class ConsolaView:
     def _mostrar_menu_principal(self) -> None:
         _limpiar_pantalla()
         _encabezado()
-        _imprimir_sensores(self._sensores_registrados, self._ultimas_lecturas)
+        en_marcha = bool(self._hilo_monitoreo and self._hilo_monitoreo.is_alive())
+        estado_sistema = "[EN MARCHA]" if en_marcha else "[DETENIDO] "
+        print(f"  Estado del sistema : {estado_sistema}")
+        _imprimir_sensores(
+            self._sensores_registrados,
+            self._ultimas_lecturas,
+            self._estado_bomba,
+        )
         print()
         print("  1. Agregar sensor de humedad")
         print("  2. Ver lecturas de sensores")
@@ -195,16 +206,20 @@ class ConsolaView:
             input("\nPresione ENTER para volver...")
             return
 
-        # Lectura en vivo: consulta cada sensor en el momento
-        with self._lock_lecturas:
-            for nombre, sensor in self._sensores_registrados.items():
-                try:
-                    valor = sensor.leer()
-                    self._ultimas_lecturas[nombre] = valor
-                except Exception as exc:
-                    print(f"  [!] Error leyendo '{nombre}': {exc}")
+        # Si el sistema no está corriendo, leer en vivo desde el sensor
+        if not (self._hilo_monitoreo and self._hilo_monitoreo.is_alive()):
+            with self._lock_lecturas:
+                for nombre, sensor in self._sensores_registrados.items():
+                    try:
+                        self._ultimas_lecturas[nombre] = sensor.leer()
+                    except Exception as exc:
+                        print(f"  [!] Error leyendo '{nombre}': {exc}")
 
-        _imprimir_sensores(self._sensores_registrados, self._ultimas_lecturas)
+        _imprimir_sensores(
+            self._sensores_registrados,
+            self._ultimas_lecturas,
+            self._estado_bomba,
+        )
         input("\nPresione ENTER para volver...")
 
     def _menu_iniciar_sistema(self) -> None:
@@ -218,8 +233,8 @@ class ConsolaView:
             return
 
         if self._hilo_monitoreo and self._hilo_monitoreo.is_alive():
-            print("[i] El sistema ya esta en ejecucion.")
-            input("\nPresione ENTER para volver...")
+            # Ya está corriendo → entrar al dashboard directamente
+            self._modo_dashboard()
             return
 
         nombre_nodo = input("Nombre del nodo (ej. nodo_principal): ").strip()
@@ -235,8 +250,8 @@ class ConsolaView:
             name="hilo-procesador",
         )
         self._hilo_monitoreo.start()
-        print(f"\n[OK] Sistema iniciado en nodo '{nombre_nodo}'.")
-        input("\nPresione ENTER para volver al menu...")
+        # Entrar al dashboard auto-refrescante
+        self._modo_dashboard()
 
     def _menu_detener_sistema(self) -> None:
         _limpiar_pantalla()
@@ -263,30 +278,101 @@ class ConsolaView:
 
     # ── Internos ─────────────────────────────────────────────────────────────
 
+    def _modo_dashboard(self) -> None:
+        """
+        Pantalla auto-refrescante mientras el sistema de riego esta en marcha.
+        Se actualiza cada vez que el Procesador completa un ciclo de monitoreo
+        (evento_lectura) o como maximo cada segundo.
+        Presionar cualquier tecla regresa al menu principal.
+        """
+        try:
+            import msvcrt  # Windows
+            def _keypress() -> bool:
+                return msvcrt.kbhit()
+            def _flush_key():
+                while msvcrt.kbhit():
+                    msvcrt.getch()
+        except ImportError:
+            # Fallback Unix: sin deteccion de tecla, salir con Ctrl+C
+            _keypress = lambda: False
+            _flush_key = lambda: None
+
+        _flush_key()
+        while self._hilo_monitoreo and self._hilo_monitoreo.is_alive():
+            _limpiar_pantalla()
+            _encabezado()
+            print("  [SISTEMA EN MARCHA]  Presione cualquier tecla para volver al menu...")
+            with self._lock_lecturas:
+                _imprimir_sensores(
+                    self._sensores_registrados,
+                    self._ultimas_lecturas,
+                    self._estado_bomba,
+                )
+
+            # Esperar señal del procesador o timeout de 1 s chequeando teclas
+            inicio = time.monotonic()
+            while time.monotonic() - inicio < 1.0:
+                if _keypress():
+                    _flush_key()
+                    return
+                # Salir del bucle interno si llegó evento de nueva lectura
+                if self._procesador.evento_lectura.wait(timeout=0.05):
+                    break
+
+        # El hilo terminó: mostrar estado final
+        _limpiar_pantalla()
+        _encabezado()
+        print("  [SISTEMA DETENIDO]")
+        with self._lock_lecturas:
+            _imprimir_sensores(
+                self._sensores_registrados,
+                self._ultimas_lecturas,
+                self._estado_bomba,
+            )
+        input("\nPresione ENTER para volver al menu...")
+
     def _ejecutar_procesador(self, nombre_nodo: str) -> None:
         """Corre el procesador en un hilo separado y actualiza lecturas."""
-        # Guardamos el método original para poder restaurarlo
-        procesador_original_registrar = self._procesador._registrar_lecturas
-        vista = self  # captura para el closure
+        procesador = self._procesador
+        vista = self
 
-        def _registrar_y_actualizar():
-            procesador_original_registrar()
-            # Refrescar últimas lecturas para la vista
+        # Guardamos el metodo original
+        original_registrar = procesador._registrar_lecturas
+
+        def _registrar_y_capturar():
+            """Envuelve _registrar_lecturas para capturar las lecturas en la vista."""
+            # Guardamos referencias antes de que el procesador haga la lectura
+            humedad_seca = procesador.configuracion_actual["humedad_seca"]
+
+            # Llamar al metodo original (que ya guarda en BD y activa bomba)
+            original_registrar()
+
+            # Leer de nuevo para actualizar la vista (1 lectura extra por ciclo)
+            nuevas: Dict[str, Optional[float]] = {}
+            necesita_riego = False
+            with procesador._lock_sensores:
+                sensores_snap = list(procesador._sensores.items())
+            for nombre, sensor in sensores_snap:
+                try:
+                    val = sensor.leer()
+                    nuevas[nombre] = val
+                    if val < humedad_seca:
+                        necesita_riego = True
+                except Exception:
+                    pass
+
             with vista._lock_lecturas:
-                for nombre, sensor in vista._sensores_registrados.items():
-                    try:
-                        vista._ultimas_lecturas[nombre] = sensor.leer()
-                    except Exception:
-                        pass
+                vista._ultimas_lecturas.update(nuevas)
+                vista._estado_bomba = necesita_riego
 
         try:
-            self._procesador._registrar_lecturas = _registrar_y_actualizar
-            self._procesador.iniciar(nombre_nodo=nombre_nodo)
+            procesador._registrar_lecturas = _registrar_y_capturar
+            procesador.iniciar(nombre_nodo=nombre_nodo)
         except Exception as exc:
             print(f"\n[ERROR] Error en el procesador: {exc}")
         finally:
-            # Restaurar el método original
-            self._procesador._registrar_lecturas = procesador_original_registrar
+            procesador._registrar_lecturas = original_registrar
+            vista._estado_bomba = False
 
     @staticmethod
     def _sensor_simulado(nombre: str):

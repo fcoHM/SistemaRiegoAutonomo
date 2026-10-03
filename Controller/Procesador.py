@@ -37,6 +37,8 @@ class Procesador:
 		self._siguiente_monitoreo = None
 		self._ejecutando = False
 		self._bomba = bomba
+		# Evento que se activa tras cada ciclo de monitoreo (para notificar a la vista)
+		self.evento_lectura = Event()
 
 	def agregar_sensor(self, nombre, sensor):
 		if not isinstance(nombre, str) or not nombre.strip():
@@ -72,7 +74,7 @@ class Procesador:
 		self.nombre_nodo = nombre_nodo.strip()
 		self.configuracion_actual = self._obtener_configuracion()
 		ahora = self._reloj()
-		self._siguiente_actualizacion = ahora + self._minutos_a_segundos(
+		self._siguiente_actualizacion = ahora + self._intervalo_a_segundos(
 			self.configuracion_actual["intervalo_configuracion"]
 		)
 		self._siguiente_monitoreo = ahora
@@ -94,16 +96,19 @@ class Procesador:
 		if ahora >= self._siguiente_actualizacion:
 			self.configuracion_actual = self._obtener_configuracion()
 			ahora = self._reloj()
-			self._siguiente_actualizacion = ahora + self._minutos_a_segundos(
+			self._siguiente_actualizacion = ahora + self._intervalo_a_segundos(
 				self.configuracion_actual["intervalo_configuracion"]
 			)
 
 		if ahora >= self._siguiente_monitoreo:
 			self._registrar_lecturas()
 			ahora = self._reloj()
-			self._siguiente_monitoreo = ahora + self._minutos_a_segundos(
+			self._siguiente_monitoreo = ahora + self._intervalo_a_segundos(
 				self.configuracion_actual["intervalo_monitoreo"]
 			)
+			# Notificar a observadores (ej. ConsolaView) que hay nuevas lecturas
+			self.evento_lectura.set()
+			self.evento_lectura.clear()
 
 		return max(
 			0.0,
@@ -148,8 +153,16 @@ class Procesador:
 			raise ValueError(f"La configuración '{nombre}' debe estar entre {minimo} y {maximo}.")
 
 	@staticmethod
-	def _minutos_a_segundos(minutos):
-		return float(minutos) * 60
+	def _intervalo_a_segundos(valor):
+		"""
+		Convierte un valor de intervalo a segundos.
+		- Si valor >= 1 : se interpreta como MINUTOS  → multiplica x 60.
+		- Si valor <  1 : se interpreta como SEGUNDOS → se usa directamente.
+		  Útil para pruebas con intervalos cortos (ej. 0.5 = 500 ms).
+		"""
+		if float(valor) >= 1.0:
+			return float(valor) * 60.0
+		return float(valor)
 
 	def _registrar_lecturas(self):
 		with self._lock_sensores:
