@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from math import isfinite
 from numbers import Real
 from threading import Event, Lock
-from time import monotonic, time_ns
+from time import monotonic, sleep, time_ns
 
 from Model.Models.LecturaSensor import LecturaSensor
 
@@ -10,7 +10,7 @@ from Model.Models.LecturaSensor import LecturaSensor
 class Procesador:
 	MAX_SENSORES = 4
 	CONFIGURACIONES_REQUERIDAS = (
-		"humedad_mojado",
+		"humedad_seca",
 		"intervalo_configuracion",
 		"tiempo_riego",
 		"intervalo_monitoreo",
@@ -22,6 +22,7 @@ class Procesador:
 		medicion_repository,
 		solicitar_nombre_nodo=None,
 		reloj=None,
+		bomba=None,
 	):
 		self.configuracion_repository = configuracion_repository
 		self.medicion_repository = medicion_repository
@@ -35,6 +36,7 @@ class Procesador:
 		self._siguiente_actualizacion = None
 		self._siguiente_monitoreo = None
 		self._ejecutando = False
+		self._bomba = bomba
 
 	def agregar_sensor(self, nombre, sensor):
 		if not isinstance(nombre, str) or not nombre.strip():
@@ -118,7 +120,7 @@ class Procesador:
 				raise ValueError(f"Falta la configuración '{nombre}' para el nodo.")
 			valores[nombre] = entidad.value
 
-		self._validar_numero("humedad_mojado", valores["humedad_mojado"], 0, 100)
+		self._validar_numero("humedad_seca", valores["humedad_seca"], 0, 100)
 		self._validar_numero(
 			"intervalo_configuracion",
 			valores["intervalo_configuracion"],
@@ -153,6 +155,10 @@ class Procesador:
 		with self._lock_sensores:
 			sensores = tuple(self._sensores.items())
 
+		humedad_seca = self.configuracion_actual["humedad_seca"]
+		tiempo_riego = self.configuracion_actual["tiempo_riego"]
+		necesita_riego = False
+
 		for nombre, sensor in sensores:
 			valor = sensor.leer()
 			self._validar_numero(f"lectura de {nombre}", valor, 0, 100)
@@ -165,3 +171,10 @@ class Procesador:
 				valor=float(valor),
 			)
 			self.medicion_repository.create(lectura)
+			if valor < humedad_seca:
+				necesita_riego = True
+
+		if necesita_riego and self._bomba is not None:
+			self._bomba.encender()
+			sleep(float(tiempo_riego))
+			self._bomba.apagar()
