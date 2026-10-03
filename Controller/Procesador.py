@@ -4,7 +4,7 @@ from numbers import Real
 from threading import Condition, Event, Lock
 from time import monotonic, sleep, time_ns
 
-from Model.Models.LecturaSensor import LecturaSensor
+from Model.Models.Medicion import Medicion
 
 
 class Procesador:
@@ -196,24 +196,28 @@ class Procesador:
 		humedad_seca = self.configuracion_actual["humedad_seca"]
 		tiempo_riego = self.configuracion_actual["tiempo_riego"]
 		necesita_riego = False
+		lecturas = {}
 
 		for nombre, sensor in sensores:
 			valor = sensor.leer()
 			self._validar_numero(f"lectura de {nombre}", valor, 0, 100)
-			fecha_hora = datetime.now(timezone.utc)
-			lectura = LecturaSensor(
-				timestamp=time_ns(),
-				fecha_hora=fecha_hora,
-				nodo=self.nombre_nodo,
-				sensor=nombre,
-				valor=float(valor),
-			)
-			self.medicion_repository.create(lectura)
-			with self._lock_sensores:
-				self._ultimas_lecturas[nombre] = float(valor)
-			self._notificar_cambio()
+			lecturas[nombre] = float(valor)
 			if valor < humedad_seca:
 				necesita_riego = True
+
+		fecha_lectura = datetime.now(timezone.utc)
+		medicion = Medicion(
+			timestamp=time_ns(),
+			fecha_iso=fecha_lectura.isoformat(),
+			fecha_lectura=fecha_lectura,
+			nodo=self.nombre_nodo,
+			sensores=lecturas,
+			fecha_guardado=datetime.now(timezone.utc),
+		)
+		self.medicion_repository.create(medicion)
+		with self._lock_sensores:
+			self._ultimas_lecturas.update(lecturas)
+		self._notificar_cambio()
 
 		if necesita_riego and self._bomba is not None:
 			self._bomba.encender()
